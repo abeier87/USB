@@ -153,4 +153,4 @@ class ABC(ImbAlgorithmBase):
         return [
             SSL_Argument('--abc_p_cutoff', float, 0.95),
             SSL_Argument('--abc_loss_ratio', float, 1.0),
-        ]        
+        ]
