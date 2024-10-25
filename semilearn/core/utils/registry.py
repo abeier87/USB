@@ -29,7 +29,7 @@ class Register:
             self[key] = value
             return value
 
-        if callable(target):
+        if callable(target): # str是不可调用的
             # @reg.register
             return add(None, target)
         # @reg.register('alias')
@@ -88,4 +88,3 @@ def import_all_modules_for_register():
             except ImportError as error:
                 errors.append((name, error))
     _handle_errors(errors)
-

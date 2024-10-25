@@ -7,6 +7,7 @@ from semilearn.core.utils import ALGORITHMS
 from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 
+# Fixmatch = ALGORITHMS.register('fixmatch')(FixMatch)
 
 @ALGORITHMS.register('fixmatch')
 class FixMatch(AlgorithmBase):
