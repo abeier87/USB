@@ -472,7 +472,7 @@ class AlgorithmBase:
         self.hooks_dict = OrderedDict()
         for hook in self._hooks:
             self.hooks_dict[hook.name] = hook
-        
+
 
 
     def call_hook(self, fn_name, hook_name=None, *args, **kwargs):
