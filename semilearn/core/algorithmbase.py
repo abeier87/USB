@@ -326,6 +326,7 @@ class AlgorithmBase:
         total_num = 0.0
         y_true = []
         y_pred = []
+        y_probs = []
         y_logits = []
         with torch.no_grad():
             for data in eval_loader:
