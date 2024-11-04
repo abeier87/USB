@@ -323,7 +323,7 @@ def main_worker(gpu, ngpus_per_node, args):
     """
 
     global best_acc1
-    args.gpu = gpu
+    # args.gpu = gpu
 
     # random seed has to be set for the synchronization of labeled data sampling in each
     # process.
@@ -359,7 +359,8 @@ def main_worker(gpu, ngpus_per_node, args):
         logger_level = "INFO"
 
     logger = get_logger(args.save_name, save_path, logger_level)
-    logger.info(f"Use GPU: {args.gpu} for training")
+    # logger.info(f"Use GPU: {args.gpu} for training")
+    logger.info(f"Use GPU: {gpu} for training")
 
     _net_builder = get_net_builder(args.net, args.net_from_name)
     # optimizer, scheduler, datasets, dataloaders with be set in algorithms
