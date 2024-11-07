@@ -32,7 +32,7 @@ class FixMatch(AlgorithmBase):
                 If True, targets have [Batch size] shape with int values. If False, the target is vector
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None):
-        super().__init__(args, net_builder, tb_log, logger) 
+        super().__init__(args, net_builder, tb_log, logger)
         # fixmatch specified arguments
         self.init(T=args.T, p_cutoff=args.p_cutoff, hard_label=args.hard_label)
     
