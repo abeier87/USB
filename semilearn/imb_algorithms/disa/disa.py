@@ -44,8 +44,9 @@ class DiSA(ImbAlgorithmBase):
         self.ema_model = ETFNet(self.ema_model)
         self.ema_model.load_state_dict(self.model.state_dict())
         self.optimizer, self.scheduler = self.set_optimizer()
+        self.sinkhorna_ot = SinkhornDistance()
+        self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
         
-        self.num_features = self.model.num_features
         self.ot_loss_ratio = args.ot_loss_ratio
     def process_batch(self, **kwargs):
         # get core algorithm parameters
@@ -65,7 +66,7 @@ class DiSA(ImbAlgorithmBase):
         # compute ot loss using logits from dict
         ot_loss = self.compute_ot_loss(
             logits_x_lb=logits_x_lb, 
-            etfarch=ETFArch(num_features=self.num_features, num_classes=self.num_classes).ori_M.T
+            etfarch=self.etfarch
             )
         out_dict['loss'] += self.ot_loss_ratio * ot_loss 
         log_dict['train/abc_loss'] = ot_loss.item()
@@ -73,10 +74,9 @@ class DiSA(ImbAlgorithmBase):
         return out_dict, log_dict
 
     def compute_ot_loss(self, logits_x_lb, etfarch):
-        sinkhorna_ot = SinkhornDistance()
         logits_x_lb = logits_x_lb / torch.clamp(
             torch.sqrt(torch.sum(logits_x_lb ** 2, dim=1, keepdims=True)), 1e-8).cuda()
-        ot_loss = sinkhorna_ot(logits_x_lb, etfarch)
+        ot_loss = self.sinkhorna_ot(logits_x_lb, etfarch)
         return ot_loss
 
     @staticmethod
