@@ -43,14 +43,14 @@ class SinkhornDistance(nn.Module):
         self.max_iter = 200
         self.reduction = 'none'
         self.dis = 'cos'
-        self.d_cosine = nn.CosineSimilarity(dim=-1, eps=1e-8)
+        self.d_cosine = nn.CosineSimilarity(dim=-1, eps=1e-8).cuda()
 
     def forward(self, x, y):
         
         x_col = x.unsqueeze(-2)
         y_lin = y.unsqueeze(-3)
         if self.dis == 'cos':
-            C = 1-self.d_cosine(x_col, y_lin)
+            C = 1-self.d_cosine(x_col.cuda(), y_lin.cuda())
         elif self.dis == 'euc':
             C= torch.mean((torch.abs(x_col - y_lin)) ** 2, -1)
         x_points = x.shape[-2]
@@ -61,13 +61,13 @@ class SinkhornDistance(nn.Module):
             batch_size = x.shape[0]
 
         mu = torch.empty(batch_size, x_points, dtype=torch.float,
-                         requires_grad=False).fill_(1.0 / x_points).squeeze()
+                         requires_grad=False).fill_(1.0 / x_points).cuda().squeeze()
         
         nu = torch.empty(batch_size, y_points, dtype=torch.float,
-                         requires_grad=False).fill_(1.0 / y_points).squeeze()
+                         requires_grad=False).fill_(1.0 / y_points).cuda().squeeze()
 
-        u = torch.zeros_like(mu)
-        v = torch.zeros_like(nu)
+        u = torch.zeros_like(mu).cuda()
+        v = torch.zeros_like(nu).cuda()
 
         actual_nits = 0
         thresh = 1e-1

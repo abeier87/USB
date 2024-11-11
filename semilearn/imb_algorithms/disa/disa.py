@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from inspect import signature
 from semilearn.core import ImbAlgorithmBase
 from semilearn.core.utils import IMB_ALGORITHMS
 from .utils import SinkhornDistance
@@ -40,6 +41,18 @@ class DiSA(ImbAlgorithmBase):
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
         super().__init__(args, net_builder, tb_log, logger, **kwargs)
         self.model = ETFNet(self.model)
+        self.ema_model = ETFNet(self.ema_model)
+        self.ema_model.load_state_dict(self.model.state_dict())
+        self.optimizer, self.scheduler = self.set_optimizer()
+        
+        self.num_features = self.model.num_features
+        self.ot_loss_ratio = args.ot_loss_ratio
+    def process_batch(self, **kwargs):
+        # get core algorithm parameters
+        input_args = signature(super().train_step).parameters
+        input_args = list(input_args.keys())
+        return super().process_batch(input_args=input_args, **kwargs)    
+    
     def train_step(self, *args, **kwargs):
         out_dict, log_dict = super().train_step(*args, **kwargs)
         
@@ -52,7 +65,7 @@ class DiSA(ImbAlgorithmBase):
         # compute ot loss using logits from dict
         ot_loss = self.compute_ot_loss(
             logits_x_lb=logits_x_lb, 
-            etfarch=ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
+            etfarch=ETFArch(num_features=self.num_features, num_classes=self.num_classes).ori_M.T
             )
         out_dict['loss'] += self.ot_loss_ratio * ot_loss 
         log_dict['train/abc_loss'] = ot_loss.item()
@@ -62,7 +75,7 @@ class DiSA(ImbAlgorithmBase):
     def compute_ot_loss(self, logits_x_lb, etfarch):
         sinkhorna_ot = SinkhornDistance()
         logits_x_lb = logits_x_lb / torch.clamp(
-            torch.sqrt(torch.sum(logits_x_lb ** 2, dim=1, keepdims=True)), 1e-8)
+            torch.sqrt(torch.sum(logits_x_lb ** 2, dim=1, keepdims=True)), 1e-8).cuda()
         ot_loss = sinkhorna_ot(logits_x_lb, etfarch)
         return ot_loss
 
