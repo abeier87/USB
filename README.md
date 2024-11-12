@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=1 python train.py --c config/classic_cv_imb/fixmatch_disa/fixmatch_disa_cifar10_lb1500_100_ulb3000_100_0.yaml
+CUDA_VISIBLE_DEVICES=1 python train.py --c config/classic_cv_imb/fixmatch_saw/fixmatch_saw_cifar10_lb1500_100_ulb3000_100_0.yaml
 
 
 <div id="top"></div>
