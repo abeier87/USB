@@ -7,10 +7,8 @@ from semilearn.core.utils import ALGORITHMS
 from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 
-# Fixmatch = ALGORITHMS.register('fixmatch')(FixMatch)
-
-@ALGORITHMS.register('fixmatch')
-class FixMatch(AlgorithmBase):
+@ALGORITHMS.register('fixmatch_sq')
+class FixMatch_sq(AlgorithmBase):
 
     """
         FixMatch algorithm (https://arxiv.org/abs/2001.07685).
@@ -45,6 +43,9 @@ class FixMatch(AlgorithmBase):
         self.register_hook(PseudoLabelingHook(), "PseudoLabelingHook")
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
+    # TODO: add logits adjustment
+    def logits_adjustment(self, logits):
+        return logits
 
 
     def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
@@ -73,6 +74,9 @@ class FixMatch(AlgorithmBase):
             feat_dict = {'x_lb':feats_x_lb, 'x_ulb_w':feats_x_ulb_w, 'x_ulb_s':feats_x_ulb_s}
 
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
+            
+            # logits adjustment
+            
             
             # softmax
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w.detach())
