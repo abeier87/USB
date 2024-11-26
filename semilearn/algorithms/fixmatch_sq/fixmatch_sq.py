@@ -44,15 +44,15 @@ class FixMatch_sq(AlgorithmBase):
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
         
-    def cosine_similarity_matrix(self, matrix):
+    def calculate_pi(self, matrix):
         """
-        计算矩阵中向量两两之间的夹角余弦值，返回K*K维的对称矩阵
+        根据分类器中对应不同类别的权重向量来计算LA算法中的π值
 
-        参数:
+        input:
         matrix: 维度为(K, d)的numpy数组，表示K个d维向量
 
-        返回:
-        cos_matrix: K*K维的numpy数组，其元素(i, j)表示第i个向量和第j个向量的夹角余弦值
+        output:
+        每个类别对应的π值，维度为(K, 1)的numpy数组
         """
         # 计算向量的模长，shape为(K, 1)
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -60,14 +60,26 @@ class FixMatch_sq(AlgorithmBase):
         normalized_matrix = matrix / norms
         # 通过矩阵乘法计算两两向量的点积，得到K*K的矩阵，其元素(i, j)表示第i个向量和第j个向量的点积
         dot_product_matrix = np.dot(normalized_matrix, normalized_matrix.T)
+        # 为了避免数值计算误差导致余弦值超出[-1, 1]范围，进行裁剪
+        clipped_dot_product_matrix = np.clip(dot_product_matrix, -1, 1)
+        # 通过反余弦函数（arccos）将点积（也就是余弦值）转换为角度值（单位为弧度）
+        angle_matrix = np.arccos(clipped_dot_product_matrix)
+        # 获取向量的数量K
+        K = angle_matrix.shape[0]
+        # 创建数组用于存储每个向量的平均夹角值
+        average_angles = np.zeros(K)
+        for i in range(K):
+            # 排除与自身的夹角（值为0，因为向量与自身夹角为0弧度），计算其余夹角的平均值
+            average_angles[i] = np.mean(angle_matrix[i, np.arange(K)!= i])
         
-        return dot_product_matrix
+        total_sum = np.sum(average_angles)
+        proportions = average_angles / total_sum
+        return proportions
 
-
-    # TODO: add logits adjustment
-    def logits_adjustment(self, logits):
+    def logits_adjustment(self, logits, W):
+        pi = self.calculate_pi(W)
+        logits = logits + torch.log(pi)
         return logits
-
 
     def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
         num_lb = y_lb.shape[0]
@@ -93,11 +105,16 @@ class FixMatch_sq(AlgorithmBase):
                     logits_x_ulb_w = outs_x_ulb_w['logits']
                     feats_x_ulb_w = outs_x_ulb_w['feat']
             feat_dict = {'x_lb':feats_x_lb, 'x_ulb_w':feats_x_ulb_w, 'x_ulb_s':feats_x_ulb_s}
+            
+            # TODO: how to fetch parameter of the classifier W
+            # logits adjustment
+            '''
+            logits_x_lb = self.logits_adjustment(logits_x_lb, W)
+            logits_x_ulb_w = self.logits_adjustment(logits_x_ulb_w, W)
+            logits_x_ulb_s = self.logits_adjustment(logits_x_ulb_s, W)
+            '''
 
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
-            
-            # logits adjustment
-            
             
             # softmax
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w.detach())

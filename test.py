@@ -17,7 +17,21 @@ def cosine_similarity_matrix(matrix):
     normalized_matrix = matrix / norms
     # 通过矩阵乘法计算两两向量的点积，得到K*K的矩阵，其元素(i, j)表示第i个向量和第j个向量的点积
     dot_product_matrix = np.dot(normalized_matrix, normalized_matrix.T)
-    return dot_product_matrix
+    # 为了避免数值计算误差导致余弦值超出[-1, 1]范围，进行裁剪
+    clipped_dot_product_matrix = np.clip(dot_product_matrix, -1, 1)
+    # 通过反余弦函数（arccos）将点积（也就是余弦值）转换为角度值（单位为弧度）
+    angle_matrix = np.arccos(clipped_dot_product_matrix)
+    
+    K = angle_matrix.shape[0]
+    # 创建数组用于存储每个向量的平均夹角值
+    average_angles = np.zeros(K)
+    for i in range(K):
+        # 排除与自身的夹角（值为0，因为向量与自身夹角为0弧度），计算其余夹角的平均值
+        average_angles[i] = np.mean(angle_matrix[i, np.arange(K)!= i])
+    
+    total_sum = np.sum(average_angles)
+    proportions = average_angles / total_sum
+    return proportions
 
 # 示例用法
 # 随机生成一个维度为(5, 3)的矩阵，代表5个3维向量，你可以替换成自己真实的数据
