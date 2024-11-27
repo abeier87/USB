@@ -72,12 +72,10 @@ class FixMatch_fp(AlgorithmBase):
         return proportions
 
     def logits_adjustment(self, logits):
-        pi = self.calculate_pi(self.model.classifier.weight)
+        W = self.model.module.backbone.classifier.weight
+        with torch.no_grad():
+            pi = self.calculate_pi(W)
         logits = logits + torch.log(pi)
-        
-        # TODO 测试完请删除👇🏻这行代码
-        print("The shape of logits is: {}".format(logits.shape))
-        
         return logits
 
     def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
@@ -107,9 +105,6 @@ class FixMatch_fp(AlgorithmBase):
             
             # logits adjustment
             if self.epoch > 4:
-                # TODO 测试完请删除👇🏻这行代码
-                print('第{}个epoch，调整了logits'.format(self.epoch))
-                
                 logits_x_lb = self.logits_adjustment(logits_x_lb)
                 logits_x_ulb_w = self.logits_adjustment(logits_x_ulb_w)
                 logits_x_ulb_s = self.logits_adjustment(logits_x_ulb_s)
