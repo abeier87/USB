@@ -1,17 +1,18 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-import numpy as np
 import torch
 from semilearn.core.algorithmbase import AlgorithmBase
 from semilearn.core.utils import ALGORITHMS
 from semilearn.algorithms.hooks import PseudoLabelingHook, FixedThresholdingHook
 from semilearn.algorithms.utils import SSL_Argument, str2bool
 
-@ALGORITHMS.register('fixmatch_sq')
-class FixMatch_sq(AlgorithmBase):
+@ALGORITHMS.register('fixmatch_fp')
+class FixMatch_fp(AlgorithmBase):
 
     """
         FixMatch algorithm (https://arxiv.org/abs/2001.07685).
+        对原始FixMatch算法进行了一些改进，主要是利用分类器的不同类别权重角度来估计类别数量，再调整logits
+        由于上述作法是为了优化伪标签的质量，因此改进后的FixMatch算法被命名为FixMatch_fp（fp: finetune pseudo-labels）
 
         Args:
             - args (`argparse`):
@@ -43,42 +44,40 @@ class FixMatch_sq(AlgorithmBase):
         self.register_hook(PseudoLabelingHook(), "PseudoLabelingHook")
         self.register_hook(FixedThresholdingHook(), "MaskingHook")
         super().set_hooks()
-        
-    def calculate_pi(self, matrix):
+
+    def calculate_pi(self, matrix: torch.Tensor) -> torch.Tensor:
         """
         根据分类器中对应不同类别的权重向量来计算LA算法中的π值
-
-        input:
-        matrix: 维度为(K, d)的numpy数组，表示K个d维向量
-
-        output:
-        每个类别对应的π值，维度为(K, 1)的numpy数组
         """
         # 计算向量的模长，shape为(K, 1)
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms = torch.norm(matrix, dim=1, keepdim=True)
         # 对矩阵进行归一化，使得每一行向量都变成单位向量
         normalized_matrix = matrix / norms
         # 通过矩阵乘法计算两两向量的点积，得到K*K的矩阵，其元素(i, j)表示第i个向量和第j个向量的点积
-        dot_product_matrix = np.dot(normalized_matrix, normalized_matrix.T)
+        dot_product_matrix = torch.mm(normalized_matrix, normalized_matrix.T)
         # 为了避免数值计算误差导致余弦值超出[-1, 1]范围，进行裁剪
-        clipped_dot_product_matrix = np.clip(dot_product_matrix, -1, 1)
+        clipped_dot_product_matrix = torch.clamp(dot_product_matrix, -1, 1)
         # 通过反余弦函数（arccos）将点积（也就是余弦值）转换为角度值（单位为弧度）
-        angle_matrix = np.arccos(clipped_dot_product_matrix)
+        angle_matrix = torch.acos(clipped_dot_product_matrix)
         # 获取向量的数量K
         K = angle_matrix.shape[0]
         # 创建数组用于存储每个向量的平均夹角值
-        average_angles = np.zeros(K)
+        average_angles = torch.zeros(K, device=matrix.device)
         for i in range(K):
             # 排除与自身的夹角（值为0，因为向量与自身夹角为0弧度），计算其余夹角的平均值
-            average_angles[i] = np.mean(angle_matrix[i, np.arange(K)!= i])
+            average_angles[i] = torch.mean(angle_matrix[i, torch.arange(K)!= i])
         
-        total_sum = np.sum(average_angles)
+        total_sum = torch.sum(average_angles)
         proportions = average_angles / total_sum
         return proportions
 
-    def logits_adjustment(self, logits, W):
-        pi = self.calculate_pi(W)
+    def logits_adjustment(self, logits):
+        pi = self.calculate_pi(self.model.classifier.weight)
         logits = logits + torch.log(pi)
+        
+        # TODO 测试完请删除👇🏻这行代码
+        print("The shape of logits is: {}".format(logits.shape))
+        
         return logits
 
     def train_step(self, x_lb, y_lb, x_ulb_w, x_ulb_s):
@@ -94,7 +93,7 @@ class FixMatch_sq(AlgorithmBase):
                 feats_x_lb = outputs['feat'][:num_lb]
                 feats_x_ulb_w, feats_x_ulb_s = outputs['feat'][num_lb:].chunk(2)
             else:
-                outs_x_lb = self.model(x_lb) 
+                outs_x_lb = self.model(x_lb)
                 logits_x_lb = outs_x_lb['logits']
                 feats_x_lb = outs_x_lb['feat']
                 outs_x_ulb_s = self.model(x_ulb_s)
@@ -106,13 +105,14 @@ class FixMatch_sq(AlgorithmBase):
                     feats_x_ulb_w = outs_x_ulb_w['feat']
             feat_dict = {'x_lb':feats_x_lb, 'x_ulb_w':feats_x_ulb_w, 'x_ulb_s':feats_x_ulb_s}
             
-            # TODO: how to fetch parameter of the classifier W
             # logits adjustment
-            '''
-            logits_x_lb = self.logits_adjustment(logits_x_lb, W)
-            logits_x_ulb_w = self.logits_adjustment(logits_x_ulb_w, W)
-            logits_x_ulb_s = self.logits_adjustment(logits_x_ulb_s, W)
-            '''
+            if self.epoch > 4:
+                # TODO 测试完请删除👇🏻这行代码
+                print('第{}个epoch，调整了logits'.format(self.epoch))
+                
+                logits_x_lb = self.logits_adjustment(logits_x_lb)
+                logits_x_ulb_w = self.logits_adjustment(logits_x_ulb_w)
+                logits_x_ulb_s = self.logits_adjustment(logits_x_ulb_s)
 
             sup_loss = self.ce_loss(logits_x_lb, y_lb, reduction='mean')
             
@@ -148,7 +148,6 @@ class FixMatch_sq(AlgorithmBase):
                                          util_ratio=mask.float().mean().item())
         return out_dict, log_dict
         
-
     @staticmethod
     def get_argument():
         return [

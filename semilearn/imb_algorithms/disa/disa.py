@@ -48,12 +48,13 @@ class DiSA(ImbAlgorithmBase):
         self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
         
         self.ot_loss_ratio = args.ot_loss_ratio
+
     def process_batch(self, **kwargs):
         # get core algorithm parameters
         input_args = signature(super().train_step).parameters
         input_args = list(input_args.keys())
-        return super().process_batch(input_args=input_args, **kwargs)    
-    
+        return super().process_batch(input_args=input_args, **kwargs)
+
     def train_step(self, *args, **kwargs):
         out_dict, log_dict = super().train_step(*args, **kwargs)
         
@@ -69,7 +70,7 @@ class DiSA(ImbAlgorithmBase):
             etfarch=self.etfarch
             )
         out_dict['loss'] += self.ot_loss_ratio * ot_loss 
-        log_dict['train/abc_loss'] = ot_loss.item()
+        log_dict['train/ot_loss'] = ot_loss.item()
 
         return out_dict, log_dict
 
