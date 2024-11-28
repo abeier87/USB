@@ -34,12 +34,12 @@ class DebiasPL(ImbAlgorithmBase):
         assert args.algorithm not in ['mixmatch', 'meanteacher', 'pimodel'], "DebiasPL not supports {} as the base algorithm.".format(args.algorithm)
 
 
-        self.p_hat = torch.ones(self.num_classes, ).to(self.gpu) / self.num_classes
+        self.p_hat = torch.ones(self.num_classes, ).cuda() / self.num_classes
         self.consistency_loss = DebiasPLConsistencyLoss(tau=self.tau)
 
     def imb_init(self, tau=0.4, ema_p=0.999):
-        self.tau = tau
-        self.ema_p = ema_p
+        self.tau = torch.tensor(tau).cuda()
+        self.ema_p = torch.tensor(ema_p).cuda()
         
     def set_hooks(self):
         super().set_hooks()
@@ -49,10 +49,8 @@ class DebiasPL(ImbAlgorithmBase):
     def compute_prob(self, logits):
         # update p_hat
         probs = super().compute_prob(logits)
-        delta_p = probs.mean().cpu()
-        print("self.p_hat: {}".format(self.p_hat.device))
-        print("delta_p: {}".format(delta_p.device))
-        # print("self.ema_p: {}".format(self.ema_p.device))
+        delta_p = probs.mean()
+        self.ema_m = torch.tensor(self.ema_m).cuda()
         self.p_hat = self.ema_m * self.p_hat + (1 - self.ema_p) * delta_p
         return super().compute_prob(logits - self.tau * torch.log(self.p_hat))
 
