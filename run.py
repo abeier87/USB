@@ -8,9 +8,9 @@ import threading
 
 
 # 配置文件列表，替换为你实际的配置文件名
-config_root_path = "config/classic_cv_imb/fixmatch_cossl"
-config_file = "fixmatch_cossl_cifar10_lb1500_100_ulb3000_100"
-gpu_id = "3"
+config_root_path = "config/classic_cv_imb/fixmatch_debiaspl"
+config_file = "fixmatch_debiaspl_cifar10_lb1500_100_ulb3000_100"
+gpu_id = "2"
 
 def run_command(full_command):
     try:

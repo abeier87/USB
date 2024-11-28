@@ -36,7 +36,7 @@ dataset: cifar10
 train_sampler: RandomSampler
 num_classes: 10
 num_workers: 1
-seed: 0
+seed: 2
 world_size: 1
 rank: 0
 multiprocessing_distributed: True

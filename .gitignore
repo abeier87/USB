@@ -141,3 +141,7 @@ dmypy.json
 # MacOS system file
 .DS_Store
 README.md
+
+run.py
+run.sh
+test.py
