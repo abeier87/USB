@@ -82,7 +82,7 @@ class FixMatch(AlgorithmBase):
             if self.registered_hook("DistAlignHook"):
                 probs_x_ulb_w = self.call_hook("dist_align", "DistAlignHook", probs_x_ulb=probs_x_ulb_w.detach())
 
-            # compute mask
+            # compute mask, i.e., indicator function
             mask = self.call_hook("masking", "MaskingHook", logits_x_ulb=probs_x_ulb_w, softmax_x_ulb=False)
 
             # generate unlabeled targets using pseudo label hook
