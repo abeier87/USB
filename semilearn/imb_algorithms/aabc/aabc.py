@@ -57,7 +57,7 @@ class AABC(ImbAlgorithmBase):
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
         self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio)
 
-        super(ABC, self).__init__(args, net_builder, tb_log, logger, **kwargs)
+        super(AABC, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
         # compute lb imb ratio
         lb_class_dist = [0 for _ in range(self.num_classes)]
