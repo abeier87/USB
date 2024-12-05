@@ -130,14 +130,15 @@ class AABC(ImbAlgorithmBase):
         mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
         abc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
+        W = self.model.module.aux_classifier.weight
+        
         # compute unlabeled abc loss
         with torch.no_grad():
-            # probs_x_ulb_w = torch.softmax(logits_x_ulb_w, dim=1)
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w)
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             mask_ulb_1 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
-            # TODO: better ways to compute ulb_class_dist
-            ulb_class_dist = 1 - (self.epoch / self.epochs) * (1 - self.lb_class_dist) # 数值越大，对应类别的数量越小
+            estimated_ulb_class_dist = self.calculate_p(W)
+            ulb_class_dist = 1 - (self.epoch / self.epochs) * estimated_ulb_class_dist
             mask_ulb_2 = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb = mask_ulb_1 * mask_ulb_2
     
@@ -148,6 +149,31 @@ class AABC(ImbAlgorithmBase):
         abc_loss = abc_lb_loss + abc_ulb_loss
         return abc_loss
 
+    def calculate_p(self, matrix: torch.Tensor) -> torch.Tensor:
+        """
+        根据分类器中对应不同类别的权重向量角度大小比例，为了估算类别数量比例
+        """
+        # 计算向量的模长，shape为(K, 1)
+        norms = torch.norm(matrix, dim=1, keepdim=True)
+        # 对矩阵进行归一化，使得每一行向量都变成单位向量
+        normalized_matrix = matrix / norms
+        # 通过矩阵乘法计算两两向量的点积，得到K*K的矩阵，其元素(i, j)表示第i个向量和第j个向量的点积
+        dot_product_matrix = torch.mm(normalized_matrix, normalized_matrix.T)
+        # 为了避免数值计算误差导致余弦值超出[-1, 1]范围，进行裁剪
+        clipped_dot_product_matrix = torch.clamp(dot_product_matrix, -1, 1)
+        # 通过反余弦函数（arccos）将点积（也就是余弦值）转换为角度值（单位为弧度）
+        angle_matrix = torch.acos(clipped_dot_product_matrix)
+        # 获取向量的数量K
+        K = angle_matrix.shape[0]
+        # 创建数组用于存储每个向量的平均夹角值
+        average_angles = torch.zeros(K, device=matrix.device)
+        for i in range(K):
+            # 排除与自身的夹角（值为0，因为向量与自身夹角为0弧度），计算其余夹角的平均值
+            average_angles[i] = torch.mean(angle_matrix[i, torch.arange(K)!= i])
+        
+        total_sum = torch.sum(average_angles)
+        proportions = average_angles / total_sum
+        return proportions
 
     @staticmethod
     def get_argument():

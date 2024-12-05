@@ -136,7 +136,6 @@ class ABC(ImbAlgorithmBase):
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w)
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             mask_ulb_1 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
-            # TODO: better ways to compute ulb_class_dist
             ulb_class_dist = 1 - (self.epoch / self.epochs) * (1 - self.lb_class_dist) # 数值越大，对应类别的数量越小
             mask_ulb_2 = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb = mask_ulb_1 * mask_ulb_2
