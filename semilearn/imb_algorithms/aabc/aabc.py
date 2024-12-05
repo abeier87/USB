@@ -35,10 +35,10 @@ class ABCNet(nn.Module):
         return matcher
 
 
-@IMB_ALGORITHMS.register('abc')
-class ABC(ImbAlgorithmBase):
+@IMB_ALGORITHMS.register('aabc')
+class AABC(ImbAlgorithmBase):
     """
-        ABC algorithm (https://arxiv.org/abs/2110.10368).
+        Advanced ABC algorithm.
 
         Args:
             - args (`argparse`):
