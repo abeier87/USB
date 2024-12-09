@@ -119,7 +119,7 @@ class AD(ImbAlgorithmBase):
         log_dict['train/abc_loss'] = abc_loss.item()
         
         # compute ot loss
-        bn_lb_ulb = self.model.module.bn(torch.cat(feats_x_lb, feats_x_ulb_s))
+        bn_lb_ulb = self.model.module.bn(torch.cat((feats_x_lb, feats_x_ulb_s)))
         ot_loss = self.compute_ot_loss(
             logits_x_lb=bn_lb_ulb, 
             etfarch=self.etfarch
@@ -143,6 +143,9 @@ class AD(ImbAlgorithmBase):
         
         if not self.lb_class_dist.is_cuda:
             self.lb_class_dist = self.lb_class_dist.to(y_lb.device)
+        
+        if not self.ulb_class_dist.is_cuda:
+            self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
 
         # compute labeled abc loss
         mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
