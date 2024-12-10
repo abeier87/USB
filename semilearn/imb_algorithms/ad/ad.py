@@ -58,7 +58,7 @@ class AD(ImbAlgorithmBase):
                 loss ration for auxiliary classifier
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
-        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio)
+        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_W=args.include_W, include_u_disa=args.include_u_disa)
 
         super(AD, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
@@ -81,9 +81,11 @@ class AD(ImbAlgorithmBase):
         self.ot_loss_ratio = args.ot_loss_ratio
 
 
-    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0):
+    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_W=False, include_u_disa=True):
         self.abc_p_cutoff = abc_p_cutoff
         self.abc_loss_ratio = abc_loss_ratio
+        self.include_W = include_W
+        self.include_u_disa = include_u_disa
 
     def process_batch(self, **kwargs):
         # get core algorithm parameters
@@ -119,9 +121,13 @@ class AD(ImbAlgorithmBase):
         log_dict['train/abc_loss'] = abc_loss.item()
         
         # compute ot loss
-        bn_lb_ulb = self.model.module.bn(torch.cat((feats_x_lb, feats_x_ulb_s)))
+        if self.include_u_disa:
+            feats = torch.cat((feats_x_lb, feats_x_ulb_s))
+        else:
+            feats = feats_x_lb
+        bn_lb_ulb = self.model.module.bn(feats)
         ot_loss = self.compute_ot_loss(
-            logits_x_lb=bn_lb_ulb, 
+            logits_x_lb=bn_lb_ulb,
             etfarch=self.etfarch
             )
         out_dict['loss'] += self.ot_loss_ratio * ot_loss 
@@ -159,13 +165,16 @@ class AD(ImbAlgorithmBase):
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             
             self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * probs_x_ulb_w.mean(0)
-            ulb_class_dist1 = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
             
-            if self.epoch > 0.75 * self.epochs:
-                ulb_class_dist2 = self.calculate_p(W) # 根据分类器中对应不同类别的权重向量角度大小比例估算类别分布
-                ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1 * ulb_class_dist2
+            if self.include_W:
+                ulb_class_dist1 = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
+                if self.epoch > 0.75 * self.epochs:
+                    ulb_class_dist2 = self.calculate_p(W) # 根据分类器中对应不同类别的权重向量角度大小比例估算类别分布
+                    ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1 * ulb_class_dist2
+                else:
+                    ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1
             else:
-                ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1
+                ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
             
             mask_ulb_1 = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb_2 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
@@ -216,4 +225,6 @@ class AD(ImbAlgorithmBase):
             SSL_Argument('--abc_p_cutoff', float, 0.95),
             SSL_Argument('--abc_loss_ratio', float, 1.0),
             SSL_Argument('--ot_loss_ratio', float, 0.1),
+            SSL_Argument('--include_W', bool, False),
+            SSL_Argument('--include_u_disa', bool, True),
         ]

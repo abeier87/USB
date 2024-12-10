@@ -77,7 +77,7 @@ class TRAS(ImbAlgorithmBase):
         self.optimizer, self.scheduler = self.set_optimizer()
 
         # compute T logits
-        self.la = torch.log(self.lb_class_dist ** self.tro + 1e-12).to(self.gpu)
+        self.la = torch.log(self.lb_class_dist ** self.tro + 1e-12).cuda()
         T_logit = torch.softmax(-self.la / 1, dim=0)
         self.T_logit = self.A * T_logit + self.B
 
