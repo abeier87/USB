@@ -58,7 +58,7 @@ class AD(ImbAlgorithmBase):
                 loss ration for auxiliary classifier
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
-        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_W=args.include_W, include_u_disa=args.include_u_disa)
+        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_W_lb=args.include_W_lb, include_W_ulb=args.include_W_ulb, include_u_disa=args.include_u_disa)
 
         super(AD, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
@@ -81,10 +81,11 @@ class AD(ImbAlgorithmBase):
         self.ot_loss_ratio = args.ot_loss_ratio
 
 
-    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_W=False, include_u_disa=True):
+    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_W_lb=False, include_W_ulb=False, include_u_disa=True):
         self.abc_p_cutoff = abc_p_cutoff
         self.abc_loss_ratio = abc_loss_ratio
-        self.include_W = include_W
+        self.include_W_lb = include_W_lb
+        self.include_W_ulb = include_W_ulb
         self.include_u_disa = include_u_disa
 
     def process_batch(self, **kwargs):
@@ -130,7 +131,7 @@ class AD(ImbAlgorithmBase):
             logits_x_lb=bn_lb_ulb,
             etfarch=self.etfarch
             )
-        out_dict['loss'] += self.ot_loss_ratio * ot_loss 
+        out_dict['loss'] += self.ot_loss_ratio * ot_loss
         log_dict['train/ot_loss'] = ot_loss.item()
         
         return out_dict, log_dict
@@ -152,12 +153,21 @@ class AD(ImbAlgorithmBase):
         
         if not self.ulb_class_dist.is_cuda:
             self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
-
+        
+        W = self.model.module.aux_classifier.weight
+        W_class_dist = self.calculate_norm(W)
+        W_class_dist = torch.min(W_class_dist) / W_class_dist
+        W_class_dist = W_class_dist.to(y_lb.device)
+        mask_W = self.bernouli_mask(0.5 * W_class_dist[y_lb])
+        
         # compute labeled abc loss
-        mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
+        if self.include_W_lb:
+            mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
+            mask_lb = torch.logical_or(mask_W, mask_lb)
+        else:
+            mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
         abc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
-        W = self.model.module.aux_classifier.weight
         
         # compute unlabeled abc loss
         with torch.no_grad():
@@ -165,21 +175,16 @@ class AD(ImbAlgorithmBase):
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             
             self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * probs_x_ulb_w.mean(0)
+            ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
             
-            if self.include_W:
-                ulb_class_dist1 = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
-                if self.epoch > 0.75 * self.epochs:
-                    ulb_class_dist2 = self.calculate_p(W) # 根据分类器中对应不同类别的权重向量角度大小比例估算类别分布
-                    ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1 * ulb_class_dist2
-                else:
-                    ulb_class_dist = 1 - (self.epoch / self.epochs) * ulb_class_dist1
+            if self.include_W_ulb:
+                mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
+                mask_ulb = torch.logical_or(mask_W, mask_ulb)
             else:
-                ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
-            
-            mask_ulb_1 = self.bernouli_mask(ulb_class_dist[y_ulb])
+                mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb_2 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
-            mask_ulb = mask_ulb_1 * mask_ulb_2
-    
+            mask_ulb = mask_ulb * mask_ulb_2
+
         abc_ulb_loss = 0.0
         for logits_s in logits_x_ulb_s:
             abc_ulb_loss += (self.ce_loss(logits_s, y_ulb, reduction='none') * mask_ulb).mean()
@@ -187,31 +192,13 @@ class AD(ImbAlgorithmBase):
         abc_loss = abc_lb_loss + abc_ulb_loss
         return abc_loss
 
-    def calculate_p(self, matrix: torch.Tensor) -> torch.Tensor:
+    def calculate_norm(self, matrix: torch.Tensor) -> torch.Tensor:
         """
-        根据分类器中对应不同类别的权重向量角度大小比例，为了估算类别数量比例
+        根据分类器中对应不同类别的权重的L2-Norm
         """
         # 计算向量的模长，shape为(K, 1)
         norms = torch.norm(matrix, dim=1, keepdim=True)
-        # 对矩阵进行归一化，使得每一行向量都变成单位向量
-        normalized_matrix = matrix / norms
-        # 通过矩阵乘法计算两两向量的点积，得到K*K的矩阵，其元素(i, j)表示第i个向量和第j个向量的点积
-        dot_product_matrix = torch.mm(normalized_matrix, normalized_matrix.T)
-        # 为了避免数值计算误差导致余弦值超出[-1, 1]范围，进行裁剪
-        clipped_dot_product_matrix = torch.clamp(dot_product_matrix, -1, 1)
-        # 通过反余弦函数（arccos）将点积（也就是余弦值）转换为角度值（单位为弧度）
-        angle_matrix = torch.acos(clipped_dot_product_matrix)
-        # 获取向量的数量K
-        K = angle_matrix.shape[0]
-        # 创建数组用于存储每个向量的平均夹角值
-        average_angles = torch.zeros(K, device=matrix.device)
-        for i in range(K):
-            # 排除与自身的夹角（值为0，因为向量与自身夹角为0弧度），计算其余夹角的平均值
-            average_angles[i] = torch.mean(angle_matrix[i, torch.arange(K)!= i])
-        
-        total_sum = torch.sum(average_angles)
-        proportions = average_angles / total_sum
-        return proportions
+        return norms
 
     def compute_ot_loss(self, logits_x_lb, etfarch):
         logits_x_lb = logits_x_lb / torch.clamp(
@@ -225,6 +212,7 @@ class AD(ImbAlgorithmBase):
             SSL_Argument('--abc_p_cutoff', float, 0.95),
             SSL_Argument('--abc_loss_ratio', float, 1.0),
             SSL_Argument('--ot_loss_ratio', float, 0.1),
-            SSL_Argument('--include_W', bool, False),
+            SSL_Argument('--include_W_lb', bool, False),
+            SSL_Argument('--include_W_ulb', bool, False),
             SSL_Argument('--include_u_disa', bool, True),
         ]
