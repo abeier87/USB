@@ -38,10 +38,10 @@ class ADNet(nn.Module):
 
 
 
-@IMB_ALGORITHMS.register('ad')
-class AD(ImbAlgorithmBase):
+@IMB_ALGORITHMS.register('ad2')
+class AD2(ImbAlgorithmBase):
     """
-        (A)dvanced ABC + (D)isa algorithm.
+        (A)dvanced ABC + (D)isa algorithm. 这里修改了Disa，目标结构不是生成的ETF，而是分类器W。
 
         Args:
             - args (`argparse`):
@@ -58,9 +58,9 @@ class AD(ImbAlgorithmBase):
                 loss ration for auxiliary classifier
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
-        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_W_lb=args.include_W_lb, include_W_ulb=args.include_W_ulb, include_u_disa=args.include_u_disa)
+        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_u_disa=args.include_u_disa)
 
-        super(AD, self).__init__(args, net_builder, tb_log, logger, **kwargs)
+        super(AD2, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
         # compute lb imb ratio
         lb_class_dist = [0 for _ in range(self.num_classes)]
@@ -77,15 +77,13 @@ class AD(ImbAlgorithmBase):
         self.ema_model.load_state_dict(self.model.state_dict())
         self.optimizer, self.scheduler = self.set_optimizer()
         self.sinkhorna_ot = SinkhornDistance()
-        self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
+        # self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
         self.ot_loss_ratio = args.ot_loss_ratio
 
 
-    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_W_lb=False, include_W_ulb=False, include_u_disa=True):
+    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_u_disa=True):
         self.abc_p_cutoff = abc_p_cutoff
         self.abc_loss_ratio = abc_loss_ratio
-        self.include_W_lb = include_W_lb
-        self.include_W_ulb = include_W_ulb
         self.include_u_disa = include_u_disa
 
     def process_batch(self, **kwargs):
@@ -113,6 +111,7 @@ class AD(ImbAlgorithmBase):
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w)
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             mask = max_probs >= self.abc_p_cutoff
+            W = self.model.module.aux_classifier.weight
 
         # compute abc loss using logits_aux from dict
         abc_loss = self.compute_abc_loss(
@@ -135,7 +134,7 @@ class AD(ImbAlgorithmBase):
         bn_lb_ulb = self.model.module.bn(feats)
         ot_loss = self.compute_ot_loss(
             logits_x_lb=bn_lb_ulb,
-            etfarch=self.etfarch
+            etfarch=W
             )
         out_dict['loss'] += self.ot_loss_ratio * ot_loss
         log_dict['train/ot_loss'] = ot_loss.item()
@@ -160,31 +159,19 @@ class AD(ImbAlgorithmBase):
         if not self.ulb_class_dist.is_cuda:
             self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
         
-        W = self.model.module.aux_classifier.weight
-        W_class_dist = self.calculate_norm(W)
-        W_class_dist = torch.min(W_class_dist) / W_class_dist
-        W_class_dist = W_class_dist.to(y_lb.device)
-        mask_W = self.bernouli_mask(0.5 * W_class_dist[y_lb])
+        
         
         # compute labeled abc loss
-        if self.include_W_lb:
-            mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
-            mask_lb = torch.logical_or(mask_W, mask_lb)
-        else:
-            mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
+        mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
         abc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
         
         # compute unlabeled abc loss
         with torch.no_grad():
             self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * probs_x_ulb_w.mean(0)
-            # ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
-            
-            if self.include_W_ulb:
-                mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
-                mask_ulb = torch.logical_or(mask_W, mask_ulb)
-            else:
-                mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
+            ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
+
+            mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb_2 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
             mask_ulb = mask_ulb * mask_ulb_2
 
