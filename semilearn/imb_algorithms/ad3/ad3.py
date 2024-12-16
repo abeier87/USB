@@ -167,12 +167,15 @@ class AD3(ImbAlgorithmBase):
             W_class_dist = self.calculate_norm(W)
             W_class_dist = torch.min(W_class_dist) / W_class_dist
             W_class_dist = W_class_dist.to(y_lb.device)
-            
-            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * W_class_dist
-            
-            mask_ulb1 = self.bernouli_mask(ulb_class_dist[y_ulb])
+            # print(f"W_class_dist shape: {W_class_dist.shape}")
+            # print(f"ulb_class_dist shape: {self.ulb_class_dist.shape}")
+            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * W_class_dist.squeeze()
+            # print(f"ulb_class_dist shape: {self.ulb_class_dist.shape}")
+            mask_ulb_1 = self.bernouli_mask(self.ulb_class_dist[y_ulb])
+            # print(f"mask_ulb_1 shape: {mask_ulb_1.shape}")
             mask_ulb_2 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
-            mask_ulb = mask_ulb1 * mask_ulb_2
+            # print(f"mask_ulb_2 shape: {mask_ulb_2.shape}")
+            mask_ulb = mask_ulb_1 * mask_ulb_2
 
             
         abc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()

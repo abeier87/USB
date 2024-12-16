@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import os
 import torch
 import torch.nn as nn
 import numpy as np
@@ -11,17 +10,16 @@ from semilearn.core import ImbAlgorithmBase
 from semilearn.core.utils import IMB_ALGORITHMS
 from semilearn.algorithms.utils import SSL_Argument
 from .utils import SinkhornDistance
-from .utils import ETFArch
 
-class ADNet(nn.Module):
+class RRCNet(nn.Module):
     def __init__(self, backbone, num_classes):
         super().__init__()
         self.backbone = backbone
         self.num_features = backbone.num_features
-
         # auxiliary classifier
         self.aux_classifier = nn.Linear(self.backbone.num_features, num_classes)
         self.bn = nn.BatchNorm1d(self.num_features)
+
     def forward(self, x, **kwargs):
         results_dict = self.backbone(x, **kwargs)
         results_dict['logits_aux'] = self.aux_classifier(results_dict['feat'])
@@ -30,7 +28,6 @@ class ADNet(nn.Module):
 
     def group_matcher(self, coarse=False):
         if hasattr(self.backbone, 'backbone'):
-            # TODO: better way
             matcher = self.backbone.backbone.group_matcher(coarse, prefix='backbone.backbone')
         else:
             matcher = self.backbone.group_matcher(coarse, prefix='backbone.')
@@ -38,10 +35,10 @@ class ADNet(nn.Module):
 
 
 
-@IMB_ALGORITHMS.register('ad2')
-class AD2(ImbAlgorithmBase):
+@IMB_ALGORITHMS.register('rrc')
+class RRC(ImbAlgorithmBase):
     """
-        (A)dvanced ABC + (D)isa algorithm. 这里修改了Disa，目标结构不是生成的ETF，而是分类器W。
+        (R)ebalancing (R)epresentation and (C)lassifier.
 
         Args:
             - args (`argparse`):
@@ -52,17 +49,17 @@ class AD2(ImbAlgorithmBase):
                 tensorboard logger
             - logger (`logging.Logger`):
                 logger to use
-            - abc_p_cutoff (`float`):
+            - rrc_p_cutoff (`float`):
                 threshold for the auxilariy classifier
-            - abc_loss_ratio (`float`):
+            - rrc_loss_ratio (`float`):
                 loss ration for auxiliary classifier
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
-        self.imb_init(abc_p_cutoff=args.abc_p_cutoff, abc_loss_ratio=args.abc_loss_ratio, include_u_disa=args.include_u_disa)
+        self.imb_init(rrc_p_cutoff=args.rrc_p_cutoff, rrc_loss_ratio=args.rrc_loss_ratio, include_u_da=args.include_u_da)
 
-        super(AD2, self).__init__(args, net_builder, tb_log, logger, **kwargs)
+        super(RRC, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
-        # compute lb imb ratio
+        # compute lb and ulb imb ratio
         lb_class_dist = [0 for _ in range(self.num_classes)]
         for c in  self.dataset_dict['train_lb'].targets:
             lb_class_dist[c] += 1
@@ -70,27 +67,26 @@ class AD2(ImbAlgorithmBase):
         self.ulb_class_dist = torch.from_numpy(lb_class_dist / np.sum(lb_class_dist)) # 将无标注数据分布初始化为和有标注数据一样的分布
         self.lb_class_dist = torch.from_numpy(np.min(lb_class_dist) / lb_class_dist) # 值越小说明对应类别的数量越大
         
-        
-        # TODO: better ways
-        self.model = ADNet(self.model, num_classes=self.num_classes)
-        self.ema_model = ADNet(self.ema_model, num_classes=self.num_classes)
+        self.model = RRCNet(self.model, num_classes=self.num_classes)
+        self.ema_model = RRCNet(self.ema_model, num_classes=self.num_classes)
         self.ema_model.load_state_dict(self.model.state_dict())
         self.optimizer, self.scheduler = self.set_optimizer()
         self.sinkhorna_ot = SinkhornDistance()
-        # self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
         self.ot_loss_ratio = args.ot_loss_ratio
 
 
-    def imb_init(self, abc_p_cutoff=0.95, abc_loss_ratio=1.0, include_u_disa=True):
-        self.abc_p_cutoff = abc_p_cutoff
-        self.abc_loss_ratio = abc_loss_ratio
-        self.include_u_disa = include_u_disa
+    def imb_init(self, rrc_p_cutoff=0.95, rrc_loss_ratio=1.0, include_u_da=True):
+        self.rrc_p_cutoff = rrc_p_cutoff
+        self.rrc_loss_ratio = rrc_loss_ratio
+        self.include_u_da = include_u_da
+
 
     def process_batch(self, **kwargs):
         # get core algorithm parameters
         input_args = signature(super().train_step).parameters
         input_args = list(input_args.keys())
         return super().process_batch(input_args=input_args, **kwargs)
+
 
     def train_step(self, *args, **kwargs):
 
@@ -107,27 +103,34 @@ class AD2(ImbAlgorithmBase):
         logits_x_lb = self.model.module.aux_classifier(feats_x_lb)
         logits_x_ulb_s = self.model.module.aux_classifier(feats_x_ulb_s)
         with torch.no_grad():
+            # 用于更新估计的无标注数据分布
+            mean_feats_x_ulb_w = feats_x_ulb_w.mean(dim=0)
+            mean_logits_feats_x_ulb_w = self.model.module.aux_classifier(mean_feats_x_ulb_w)
+            mean_probs_x_ulb_w = self.compute_prob(mean_logits_feats_x_ulb_w)
+            
+            # 用于计算伪标签置信度超过0.95的对应的x_ulb_s的ot-loss
             logits_x_ulb_w = self.model.module.aux_classifier(feats_x_ulb_w)
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w)
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
-            mask = max_probs >= self.abc_p_cutoff
+            mask = max_probs >= self.rrc_p_cutoff
             W = self.model.module.aux_classifier.weight
 
-        # compute abc loss using logits_aux from dict
-        abc_loss = self.compute_abc_loss(
-            logits_x_lb=logits_x_lb, 
+        # compute rrc loss using logits_aux from dict
+        rrc_loss = self.compute_rrc_loss(
+            logits_x_lb=logits_x_lb,
             y_lb=kwargs['y_lb'],
             logits_x_ulb_w=logits_x_ulb_w,
             logits_x_ulb_s=logits_x_ulb_s,
-            probs_x_ulb_w=probs_x_ulb_w,
+            mean_probs_x_ulb_w=mean_probs_x_ulb_w,
             max_probs=max_probs,
             y_ulb=y_ulb
             )
-        out_dict['loss'] += self.abc_loss_ratio * abc_loss
-        log_dict['train/abc_loss'] = abc_loss.item()
+
+        out_dict['loss'] += self.rrc_loss_ratio * rrc_loss
+        log_dict['train/rrc_loss'] = rrc_loss.item()
         
         # compute ot loss
-        if self.include_u_disa:
+        if self.include_u_da:
             feats = torch.cat((feats_x_lb, feats_x_ulb_s[mask]))
         else:
             feats = feats_x_lb
@@ -149,7 +152,7 @@ class AD2(ImbAlgorithmBase):
     def bernouli_mask(x):
         return torch.bernoulli(x.detach()).float()
     
-    def compute_abc_loss(self, logits_x_lb, y_lb, logits_x_ulb_w, logits_x_ulb_s, probs_x_ulb_w, max_probs, y_ulb):
+    def compute_rrc_loss(self, logits_x_lb, y_lb, logits_x_ulb_w, logits_x_ulb_s, mean_probs_x_ulb_w, max_probs, y_ulb):
         if not isinstance(logits_x_ulb_s, list):
             logits_x_ulb_s = [logits_x_ulb_s]
         
@@ -160,34 +163,26 @@ class AD2(ImbAlgorithmBase):
             self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
         
         
-        # compute labeled abc loss
+        # compute labeled rrc loss
         mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
-        abc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
+        rrc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
         
         # compute unlabeled abc loss
         with torch.no_grad():
-            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * probs_x_ulb_w.mean(0)
+            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * mean_probs_x_ulb_w
             ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
 
             mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
-            mask_ulb_2 = max_probs.ge(self.abc_p_cutoff).to(logits_x_ulb_w.dtype)
+            mask_ulb_2 = max_probs.ge(self.rrc_p_cutoff).to(logits_x_ulb_w.dtype)
             mask_ulb = mask_ulb * mask_ulb_2
 
-        abc_ulb_loss = 0.0
+        rrc_ulb_loss = 0.0
         for logits_s in logits_x_ulb_s:
-            abc_ulb_loss += (self.ce_loss(logits_s, y_ulb, reduction='none') * mask_ulb).mean()
+            rrc_ulb_loss += (self.ce_loss(logits_s, y_ulb, reduction='none') * mask_ulb).mean()
         
-        abc_loss = abc_lb_loss + abc_ulb_loss
-        return abc_loss
-
-    def calculate_norm(self, matrix: torch.Tensor) -> torch.Tensor:
-        """
-        根据分类器中对应不同类别的权重的L2-Norm
-        """
-        # 计算向量的模长，shape为(K, 1)
-        norms = torch.norm(matrix, dim=1, keepdim=True)
-        return norms
+        rrc_loss = rrc_lb_loss + rrc_ulb_loss
+        return rrc_loss
 
     def compute_ot_loss(self, logits_x_lb, etfarch):
         logits_x_lb = logits_x_lb / torch.clamp(
@@ -198,10 +193,8 @@ class AD2(ImbAlgorithmBase):
     @staticmethod
     def get_argument():
         return [
-            SSL_Argument('--abc_p_cutoff', float, 0.95),
-            SSL_Argument('--abc_loss_ratio', float, 1.0),
+            SSL_Argument('--rrc_p_cutoff', float, 0.95),
+            SSL_Argument('--rrc_loss_ratio', float, 1.0),
             SSL_Argument('--ot_loss_ratio', float, 0.1),
-            SSL_Argument('--include_W_lb', bool, False),
-            SSL_Argument('--include_W_ulb', bool, False),
-            SSL_Argument('--include_u_disa', bool, True),
+            SSL_Argument('--include_u_da', bool, True),
         ]
