@@ -10,6 +10,7 @@ from semilearn.core import ImbAlgorithmBase
 from semilearn.core.utils import IMB_ALGORITHMS
 from semilearn.algorithms.utils import SSL_Argument
 from .utils import SinkhornDistance
+from .utils import ETFArch
 
 class RRCNet(nn.Module):
     def __init__(self, backbone, num_classes):
@@ -55,7 +56,7 @@ class RRC(ImbAlgorithmBase):
                 loss ration for auxiliary classifier
     """
     def __init__(self, args, net_builder, tb_log=None, logger=None, **kwargs):
-        self.imb_init(rrc_p_cutoff=args.rrc_p_cutoff, rrc_loss_ratio=args.rrc_loss_ratio, include_u_da=args.include_u_da)
+        self.imb_init(rrc_p_cutoff=args.rrc_p_cutoff, rrc_loss_ratio=args.rrc_loss_ratio, include_W_da=args.include_W_da, include_disa=args.include_disa)
 
         super(RRC, self).__init__(args, net_builder, tb_log, logger, **kwargs)
 
@@ -64,7 +65,8 @@ class RRC(ImbAlgorithmBase):
         for c in  self.dataset_dict['train_lb'].targets:
             lb_class_dist[c] += 1
         lb_class_dist = np.array(lb_class_dist)
-        self.ulb_class_dist = torch.from_numpy(lb_class_dist / np.sum(lb_class_dist)) # 将无标注数据分布初始化为和有标注数据一样的分布
+        # self.ulb_class_dist = torch.from_numpy(lb_class_dist / np.sum(lb_class_dist)) # 将无标注数据分布初始化为和有标注数据一样的分布
+        self.ulb_class_dist = torch.Tensor([1/self.num_classes for _ in range(self.num_classes)])
         self.lb_class_dist = torch.from_numpy(np.min(lb_class_dist) / lb_class_dist) # 值越小说明对应类别的数量越大
         
         self.model = RRCNet(self.model, num_classes=self.num_classes)
@@ -72,14 +74,15 @@ class RRC(ImbAlgorithmBase):
         self.ema_model.load_state_dict(self.model.state_dict())
         self.optimizer, self.scheduler = self.set_optimizer()
         self.sinkhorna_ot = SinkhornDistance()
+        self.etfarch = ETFArch(num_features=self.model.num_features, num_classes=self.num_classes).ori_M.T
         self.ot_loss_ratio = args.ot_loss_ratio
+        self.var_cutoff = args.var_cutoff
 
-
-    def imb_init(self, rrc_p_cutoff=0.95, rrc_loss_ratio=1.0, include_u_da=True):
+    def imb_init(self, rrc_p_cutoff=0.95, rrc_loss_ratio=1.0, include_W_da=True, include_disa=False):
         self.rrc_p_cutoff = rrc_p_cutoff
         self.rrc_loss_ratio = rrc_loss_ratio
-        self.include_u_da = include_u_da
-
+        self.include_W_da = include_W_da
+        self.include_disa = include_disa
 
     def process_batch(self, **kwargs):
         # get core algorithm parameters
@@ -130,17 +133,26 @@ class RRC(ImbAlgorithmBase):
         log_dict['train/rrc_loss'] = rrc_loss.item()
         
         # compute ot loss
-        if self.include_u_da:
+        if self.include_W_da:
             feats = torch.cat((feats_x_lb, feats_x_ulb_s[mask]))
+            bn_lb_ulb = self.model.module.bn(feats)
+            ot_loss = self.compute_ot_loss(
+                logits_x_lb=bn_lb_ulb,
+                etfarch=W
+                )
+            out_dict['loss'] += self.ot_loss_ratio * ot_loss
+            log_dict['train/ot_loss'] = ot_loss.item()
+        elif self.include_disa:
+            feats = torch.cat((feats_x_lb, feats_x_ulb_s[mask]))
+            bn_lb_ulb = self.model.module.bn(feats)
+            ot_loss = self.compute_ot_loss(
+                logits_x_lb=bn_lb_ulb,
+                etfarch=self.etfarch
+                )
+            out_dict['loss'] += self.ot_loss_ratio * ot_loss
+            log_dict['train/ot_loss'] = ot_loss.item()
         else:
-            feats = feats_x_lb
-        bn_lb_ulb = self.model.module.bn(feats)
-        ot_loss = self.compute_ot_loss(
-            logits_x_lb=bn_lb_ulb,
-            etfarch=W
-            )
-        out_dict['loss'] += self.ot_loss_ratio * ot_loss
-        log_dict['train/ot_loss'] = ot_loss.item()
+            return out_dict, log_dict
         
         return out_dict, log_dict
     
@@ -167,15 +179,21 @@ class RRC(ImbAlgorithmBase):
         mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
         rrc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
-        
-        # compute unlabeled abc loss
-        with torch.no_grad():
-            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * mean_probs_x_ulb_w
-            ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist # 根据伪标签估算无标注数据的类别分布
 
-            mask_ulb = self.bernouli_mask(ulb_class_dist[y_ulb])
+        # compute unlabeled rrc loss
+        with torch.no_grad():
+            # ulb_dist_variance = self.compute_dist_variance(self.ulb_class_dist)
+            # if ulb_dist_variance > self.var_cutoff:
+            #     self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * mean_probs_x_ulb_w
+            
+            self.ulb_class_dist = 0.99 * self.ulb_class_dist + 0.01 * mean_probs_x_ulb_w
+            # print(self.ulb_class_dist)
+            ulb_class_dist = torch.min(self.ulb_class_dist) / self.ulb_class_dist  # 根据伪标签估算无标注数据的类别分布
+            ulb_class_dist = 1 - (self.epoch / self.epochs) * (1 - ulb_class_dist)
+
+            mask_ulb_1 = self.bernouli_mask(ulb_class_dist[y_ulb])
             mask_ulb_2 = max_probs.ge(self.rrc_p_cutoff).to(logits_x_ulb_w.dtype)
-            mask_ulb = mask_ulb * mask_ulb_2
+            mask_ulb = mask_ulb_1 * mask_ulb_2
 
         rrc_ulb_loss = 0.0
         for logits_s in logits_x_ulb_s:
@@ -190,11 +208,26 @@ class RRC(ImbAlgorithmBase):
         ot_loss = self.sinkhorna_ot(logits_x_lb, etfarch)
         return ot_loss
     
+    def compute_dist_variance(self, dist):
+        """
+        Compute unbiased variance of a distribution.
+
+        Args:
+            - dist (`torch.Tensor`):
+                a distribution
+        """
+        ave = torch.mean(dist)
+        variance = torch.sum((dist - ave) ** 2) / (dist.size(0) - 1)
+        return variance
+        
+    
     @staticmethod
     def get_argument():
         return [
             SSL_Argument('--rrc_p_cutoff', float, 0.95),
             SSL_Argument('--rrc_loss_ratio', float, 1.0),
             SSL_Argument('--ot_loss_ratio', float, 0.1),
-            SSL_Argument('--include_u_da', bool, True),
+            SSL_Argument('--var_cutoff', float, 0.0085),
+            SSL_Argument('--include_W_da', bool, False),
+            SSL_Argument('--include_disa', bool, True),
         ]
