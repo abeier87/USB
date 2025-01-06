@@ -151,7 +151,7 @@ class ImbalancedSampling:
 # 使用示例
 if __name__ == "__main__":
     # 示例数据
-    r_values = [0.4, 0.3, 0.2, 0.1]  # 示例类别比例
+    r_values = [0.3, 0.2, 0.2, 0.1, 0.1, 0.05, 0.05]  # 示例类别比例
     z = 0.005  # 示例z值
     
     solver = ImbalancedSampling(r_values, z)
