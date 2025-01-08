@@ -1,5 +1,7 @@
 import numpy as np
 from scipy.optimize import minimize
+import torch
+
 
 class ImbalancedSampling:
     def __init__(self, r_values, z):
@@ -8,7 +10,7 @@ class ImbalancedSampling:
         r_values: 各类别样本比例列表（已按从大到小排序）
         z: 给定的约束参数
         """
-        self.r_values = np.array(r_values)
+        self.r_values = r_values
         self.K = len(r_values)
         self.z = z
         
@@ -26,10 +28,10 @@ class ImbalancedSampling:
         r_B = self.r_values[i:]
         
         samples_A = r_A * s_A
-        N_A = min(samples_A) * i
+        N_A = np.min(samples_A) * i
         
         samples_B = r_B * s_B
-        N_B = min(samples_B) * (self.K - i)
+        N_B = np.min(samples_B) * (self.K - i)
         
         return N_A + N_B
     
@@ -40,11 +42,11 @@ class ImbalancedSampling:
         r_A = self.r_values[:i]
         r_B = self.r_values[i:]
         
-        N_A = min(r_A * s_A) * i
-        N_B = min(r_B * s_B) * (self.K - i)
+        N_A = np.min(r_A * s_A) * i
+        N_B = np.min(r_B * s_B) * (self.K - i)
         
         # 返回 z - sqrt(N_B)/(N_A+N_B) <= 0
-        return z - np.sqrt(N_B) / (N_A + N_B + 1e-10)
+        return self.z - np.sqrt(N_B) / (N_A + N_B + 1e-10)
     
     def constraints_equal_A(self, params, i):
         """确保A组内样本数量相等的约束"""
@@ -85,7 +87,7 @@ class ImbalancedSampling:
         s_A, s_B = params[:i], params[i:]
         return -self.calculate_total_samples(s_A, s_B, i)
     
-    def optimize(self):
+    def convex_optimize(self):
         """
         对每个可能的i值进行优化，找到全局最优解
         """
@@ -95,6 +97,7 @@ class ImbalancedSampling:
         
         # 遍历所有可能的i值（至少要有1个类别在每组）
         for i in range(1, self.K):
+            
             # 初始化采样比例，将最小类别的采样比例设为1
             initial_params = np.ones(self.K)
             
@@ -129,51 +132,48 @@ class ImbalancedSampling:
             bounds = [(0, 1) for _ in range(self.K)]
             
             # 优化
-            try:
-                result = minimize(
-                    lambda x: self.objective_function(x, i),
-                    initial_params,
-                    method='SLSQP',
-                    constraints=constraints,
-                    bounds=bounds,
-                    options={'ftol': 1e-8, 'maxiter': 1000}
-                )
-
-                if result.success and -result.fun > best_value:
-                    best_value = -result.fun
-                    best_result = result.x
-                    best_i = i
-            except:
-                continue
+            result = minimize(
+                lambda x: self.objective_function(x, i),
+                initial_params,
+                method='SLSQP',
+                constraints=constraints,
+                bounds=bounds,
+                options={'ftol': 1e-8, 'maxiter': 1000}
+            )
+            if result.success and -result.fun > best_value:
+                best_value = -result.fun
+                best_result = result.x
+                best_i = i
         
         return best_i, best_result, best_value
 
-# 使用示例
-if __name__ == "__main__":
-    # 示例数据
-    r_values = [0.3, 0.2, 0.2, 0.1, 0.1, 0.05, 0.05]  # 示例类别比例
-    z = 0.005  # 示例z值
+
+
+# if __name__ == "__main__":
+#     # 示例数据
+#     r_values = [0.3, 0.2, 0.2, 0.1, 0.1, 0.05, 0.05]  # 示例类别比例
+#     z = 0.005  # sqrt(weight decay)
     
-    solver = ImbalancedSampling(r_values, z)
-    best_i, best_s_values, max_total = solver.optimize()
+#     solver = ImbalancedSampling(r_values, z)
+#     best_i, best_s_values, max_total = solver.optimize()
     
-    print(f"最优分割点 i: {best_i}")
-    print(f"最优采样比例: {best_s_values}")
-    print(f"最大总样本量: {max_total}")
+#     print(f"最优分割点 i: {best_i}")
+#     print(f"最优采样比例: {best_s_values}")
+#     print(f"最大总样本量: {max_total}")
     
-    # 验证结果
-    if best_i is not None:
-        s_A = best_s_values[:best_i]
-        s_B = best_s_values[best_i:]
-        r_A = r_values[:best_i]
-        r_B = r_values[best_i:]
+#     # 验证结果
+#     if best_i is not None:
+#         s_A = best_s_values[:best_i]
+#         s_B = best_s_values[best_i:]
+#         r_A = r_values[:best_i]
+#         r_B = r_values[best_i:]
         
-        print("\n验证结果:")
-        print(f"A组各类别采样比例: {s_A}")
-        print(f"B组各类别采样比例: {s_B}")
-        print(f"A组各类别采样后的相对数量: {r_A * s_A}")
-        print(f"B组各类别采样后的相对数量: {r_B * s_B}")
+#         print("\n验证结果:")
+#         print(f"A组各类别采样比例: {s_A}")
+#         print(f"B组各类别采样比例: {s_B}")
+#         print(f"A组各类别采样后的相对数量: {r_A * s_A}")
+#         print(f"B组各类别采样后的相对数量: {r_B * s_B}")
         
-        # 验证最小类别采样比例是否为1
-        print(f"\nA组最小类别采样比例: {s_A[-1]}")
-        print(f"B组最小类别采样比例: {s_B[-1]}")
+#         # 验证最小类别采样比例是否为1
+#         print(f"\nA组最小类别采样比例: {s_A[-1]}")
+#         print(f"B组最小类别采样比例: {s_B[-1]}")

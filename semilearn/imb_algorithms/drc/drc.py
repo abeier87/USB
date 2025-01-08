@@ -9,6 +9,7 @@ from inspect import signature
 from semilearn.core import ImbAlgorithmBase
 from semilearn.core.utils import IMB_ALGORITHMS
 from semilearn.algorithms.utils import SSL_Argument
+from .utils import ImbalancedSampling
 
 class DRCNet(nn.Module):
     def __init__(self, backbone, num_classes):
@@ -37,6 +38,7 @@ class DRCNet(nn.Module):
 class DRC(ImbAlgorithmBase):
     """
         (D)ecoupling (R)epresentation and (C)lassifier.
+        根据分类器模长估算类别样本数量，再加上minority collapse理论计算采样比例。
 
         Args:
             - args (`argparse`):
@@ -61,10 +63,13 @@ class DRC(ImbAlgorithmBase):
         lb_class_dist = [0 for _ in range(self.num_classes)]
         for c in  self.dataset_dict['train_lb'].targets:
             lb_class_dist[c] += 1
+        self.wd = args.weight_decay
         lb_class_dist = np.array(lb_class_dist)
-        # self.ulb_class_dist = torch.from_numpy(lb_class_dist / np.sum(lb_class_dist)) # 将无标注数据分布初始化为和有标注数据一样的分布
         self.lb_class_dist = torch.from_numpy(np.min(lb_class_dist) / lb_class_dist) # 值越小说明对应类别的数量越大
+        self.lb_class_ratio = lb_class_dist / np.sum(lb_class_dist)
         self.ulb_class_dist = self.lb_class_dist.clone()
+        self.lb_flag = False   # 用于判断是否已经更新过lb_class_dist
+        self.ulb_flag = False   # 用于判断是否已经计算过ulb_class_dist
         
         self.model = DRCNet(self.model, num_classes=self.num_classes)
         self.ema_model = DRCNet(self.ema_model, num_classes=self.num_classes)
@@ -136,33 +141,47 @@ class DRC(ImbAlgorithmBase):
         
         if not self.lb_class_dist.is_cuda:
             self.lb_class_dist = self.lb_class_dist.to(y_lb.device)
-        
-        if not self.ulb_class_dist.is_cuda:
-            self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
-        
-        
-        # compute labeled drc loss
-        mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
-        drc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
 
-
-        # compute unlabeled drc loss
+        # compute drc loss
         with torch.no_grad():
             probs_x_ulb_w = self.compute_prob(logits_x_ulb_w)
             max_probs, y_ulb = torch.max(probs_x_ulb_w, dim=1)
             mask_ulb_1 = max_probs.ge(self.drc_p_cutoff).to(logits_x_ulb_w.dtype)
             W = self.model.module.aux_classifier.weight
             norms = self.calculate_norm(W)
-            
-            if self.epoch/self.epochs < 0.8:
+
+            # 训练初期，有标注数据均匀采样，无标注数据只要超过阈值就采样
+            if self.epoch/self.epochs <= 0.8:
+                mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
                 mask_ulb = mask_ulb_1
+            # 根据分类器模长估计类别数量，再加上minority collapse理论计算采样比例
             else:
-                if self.ulb_class_dist == None:
-                    W_class_dist = torch.min(norms) / norms
-                    self.ulb_class_dist = W_class_dist.to(y_lb.device)
+                if self.lb_flag == False:
+                    print('计算有标注数据采样比例！')
+                    solver1 = ImbalancedSampling(self.lb_class_ratio, self.wd)
+                    _, best_s_values1, _ = solver1.convex_optimize()
+                    print('best_s_values1:', best_s_values1)
+                    for i, index in enumerate(best_s_values1):
+                        self.lb_class_dist[i] = index
+                    self.lb_flag = True
+                if self.ulb_flag == False:
+                    print('计算无标注数据采样比例！')
+                    W_class_dist = norms / torch.sum(norms)
+                    W_class_dist = W_class_dist.flatten()
+                    sorted_W_class_dist, sorted_indices = torch.sort(W_class_dist, descending=True)
+                    solver2 = ImbalancedSampling(sorted_W_class_dist.cpu().numpy(), self.wd)
+                    _, best_s_values2, _ = solver2.convex_optimize()
+                    for i, index in enumerate(sorted_indices):
+                        self.ulb_class_dist[i] = best_s_values2[index]
+                    self.ulb_class_dist = self.ulb_class_dist.to(y_lb.device)
+                    self.ulb_flag = True
+                
+                mask_lb = self.bernouli_mask(self.lb_class_dist[y_lb])
                 mask_ulb_2 = self.bernouli_mask(self.ulb_class_dist[y_ulb])
                 mask_ulb = mask_ulb_1 * mask_ulb_2
 
+        drc_lb_loss = (self.ce_loss(logits_x_lb, y_lb, reduction='none') * mask_lb).mean()
+        
         drc_ulb_loss = 0.0
         for logits_s in logits_x_ulb_s:
             drc_ulb_loss += (self.ce_loss(logits_s, y_ulb, reduction='none') * mask_ulb).mean()
